@@ -41,7 +41,7 @@ class Task_free_continual_learning():
 
 
 
-        # Create pytorch network
+        # Create training model
         self.model = torch.nn.Sequential(
                   torch.nn.Linear(dim, hidden_units, bias=True),
                   torch.nn.ReLU(),
@@ -49,7 +49,7 @@ class Task_free_continual_learning():
                   torch.nn.ReLU(),
                   torch.nn.Linear(hidden_units, 2, bias=False),
         ).to(device)
-        # define loss and optimizer
+        # define loss and optimizer, our method can work with any other loss.
         self.loss_fn = torch.nn.MSELoss(reduction='none')
         self.optimizer=torch.optim.SGD(self.model.parameters(), lr=learning_rate)
         
@@ -91,7 +91,7 @@ class Task_free_continual_learning():
                 if len(recent_buffer) == self.recent_buffer_size:
                     msg='task: {0} step: {1}'.format(t,s)
 
-                    # get frames new frames from recent buffer
+                    # get frames new samples from recent buffer, construct a batch of few samples.
                     x=[_['state'] for _ in recent_buffer]
                     y=[_['trgt'] for _ in recent_buffer]
                     
@@ -99,9 +99,9 @@ class Task_free_continual_learning():
                         xh=[_['state'] for _ in hard_buffer]
                         yh=[_['trgt'] for _ in hard_buffer]
 
-                    # train
+                    # run few training iterations on the received batch.
                     for gs in range(self.gradient_steps):
-                        # evaluate recent buffer
+                        # evaluate the new batch
                         y_pred = self.model(torch.from_numpy(np.asarray(x).reshape(-1,self.dim)).type(torch.float32))
                         y_sup=torch.zeros(len(y),2).scatter_(1,torch.from_numpy(np.asarray(y).reshape(-1,1)).type(torch.LongTensor),1.).type(torch.FloatTensor)
                         recent_loss = self.loss_fn(y_pred,y_sup)
@@ -118,7 +118,7 @@ class Task_free_continual_learning():
                         # keep train loss for loss window
                         if gs==0: first_train_loss=total_loss.detach().numpy()
                         
-                        # add MAS regularization to train loss...
+                        # add MAS regularization to the training objective
                         if continual_learning and len(star_variables)!=0 and len(omegas)!=0:
                             for pindex, p in enumerate(self.model.parameters()):
                                 total_loss+=self.MAS_weight/2.*torch.sum(torch.from_numpy(omegas[pindex]).type(torch.float32)*(p-star_variables[pindex])**2)
@@ -143,13 +143,15 @@ class Task_free_continual_learning():
                     losses.append(np.mean(accuracy))
                     
                     
-                    # add loss to loss_window and detect importance weight update
+                    # add loss to loss_window and detect loss plateaus
                     loss_window.append(np.mean(first_train_loss))
                     if len(loss_window)>self.loss_window_length: del loss_window[0]
                     loss_window_mean=np.mean(loss_window)
                     loss_window_variance=np.var(loss_window)
+                    #check the statistics of the current window
                     if not new_peak_detected and loss_window_mean > last_loss_window_mean+np.sqrt(last_loss_window_variance):
-                        new_peak_detected=True                    
+                        new_peak_detected=True  
+                    #time for updating importance weights    
                     if continual_learning and loss_window_mean < self.loss_window_mean_threshold and loss_window_variance < self.loss_window_variance_threshold and new_peak_detected:
                         count_updates+=1
                         update_tags.append(0.01)
@@ -160,7 +162,7 @@ class Task_free_continual_learning():
                         # calculate importance weights and update star_variables
                         gradients=[0 for p in self.model.parameters()]
                         
-                        # calculate imporatance based on each sample in recent + hardbuffer
+                        # calculate imporatance based on each sample in the hardbuffer
                         for sx in [_['state'] for _ in hard_buffer]:
                             self.model.zero_grad()
                             y_pred=self.model(torch.from_numpy(np.asarray(sx).reshape(-1,self.dim)).type(torch.float32))
@@ -169,6 +171,7 @@ class Task_free_continual_learning():
                                 g=p.grad.data.clone().detach().numpy()
                                 gradients[pindex]+=np.abs(g)
                                 
+                        #update the running average of the importance weights        
                         omegas_old = omegas[:]
                         omegas=[]
                         star_variables=[]
@@ -236,3 +239,4 @@ class Task_free_continual_learning():
         print("duration: {0}minutes, count updates: {1}".format((time.time()-stime)/60., count_updates))
 
         return losses, loss_window_means, update_tags, loss_window_variances, test_loss
+
